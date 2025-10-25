@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 
 from datasets import ImageFolderSimple, get_transforms
 from utils import set_seed
+import onnx
+import torch.onnx
 
 
 # -----------------------------
@@ -48,6 +50,53 @@ def compute_confusion_matrix(y_true, y_pred, class_names, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path)
     plt.close()
+
+
+def export_to_onnx(model, model_name, num_classes, image_size, out_dir):
+    """Экспорт модели в ONNX для инференса на CPU"""
+    try:
+        # Создаем модель для экспорта
+        export_model = timm.create_model(model_name, pretrained=False, num_classes=num_classes)
+        
+        # Загружаем веса лучшей модели
+        best_model_path = os.path.join(out_dir, f"best_{model_name}.pth")
+        if os.path.exists(best_model_path):
+            export_model.load_state_dict(torch.load(best_model_path, map_location='cpu'))
+        else:
+            print(f"❌ Best model weights not found: {best_model_path}")
+            return
+        
+        export_model.eval()
+        
+        # Создаем dummy input
+        dummy_input = torch.randn(1, 3, image_size, image_size)
+        
+        # Экспорт в ONNX
+        onnx_path = os.path.join(out_dir, f"{model_name}.onnx")
+        torch.onnx.export(
+            export_model,
+            dummy_input,
+            onnx_path,
+            export_params=True,
+            opset_version=11,
+            do_constant_folding=True,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes={
+                'input': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            }
+        )
+        
+        # Проверяем ONNX модель
+        onnx_model = onnx.load(onnx_path)
+        onnx.checker.check_model(onnx_model)
+        
+        print(f"✅ ONNX model exported successfully: {onnx_path}")
+        print(f"   Model size: {os.path.getsize(onnx_path) / 1024 / 1024:.2f} MB")
+        
+    except Exception as e:
+        print(f"❌ Error exporting to ONNX: {e}")
 
 
 # -----------------------------
@@ -168,6 +217,8 @@ def train(cfg):
         print(classification_report(all_labels, all_preds, target_names=class_names))
 
     print(f"\n✅ Training finished! Best val acc: {best_val_acc:.4f}")
+    print(f"\n💡 Для экспорта в ONNX запустите:")
+    print(f"python export_onnx.py --model_name {cfg['model_name']}")
 
 
 # -----------------------------
